@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <title>TEST_ROOM</title>
+</head>
+
+<body>
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            const peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    {
+                        urls: "stun:stun.l.google.com:19302"
+                    }
+                ]
+            });
+
+            const socket = new WebSocket("wss://localhost:8000");
+
+            socket.addEventListener("open", ev => {
+                console.log("WebSocket 接続開始");
+
+                // 自分の音声ストリームを取得
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        // 自分の音声トラックをRTCPeerConnectionに追加
+                        stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+
+                        // オファーを作成して送信
+                        createOffer();
+                    })
+                    .catch(error => {
+                        console.error("マイクへのアクセスが拒否されました:", error);
+                    });
+            });
+
+            // シグナリングデータを受信したときの処理
+            socket.onmessage = async event => {
+                const message = JSON.parse(event.data);
+
+                console.log("メッセージタイプ:", message.type);
+
+                if (message.type === "offer") {
+                    // 相手からオファーを受信し、アンサーを作成して送信
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
+                    
+                    const answer = await peerConnection.createAnswer();
+
+                    await peerConnection.setLocalDescription(answer);
+                    socket.send(JSON.stringify({ type: "answer", sdp: peerConnection.localDescription }));
+                } else if (message.type === "answer") {
+                    // 相手からアンサーを受信
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
+                } else if (message.type === "candidate" && message.candidate) {
+                    // ICE候補を受信
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                }
+            };
+
+            // WebRTCのICE候補をシグナリングサーバーに送信
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.send(JSON.stringify({
+                        type: "candidate",
+                        candidate: event.candidate
+                    }));
+                }
+            };
+
+            // リモートの音声トラックを受信して再生
+            peerConnection.ontrack = event => {
+                const audioElement = document.createElement("audio");
+
+                audioElement.srcObject = event.streams[0];
+                audioElement.autoplay = true;
+                document.body.appendChild(audioElement);
+            };
+
+            // WebRTC接続のためのオファーを作成して送信
+            async function createOffer() {
+                try {
+                    const offer = await peerConnection.createOffer();
+
+                    await peerConnection.setLocalDescription(offer);
+                    socket.send(JSON.stringify({
+                        type: "offer",
+                        sdp: peerConnection.localDescription
+                    }));
+                } catch { }
+            }
+        });
+    </script>
+</body>
+
+</html>
