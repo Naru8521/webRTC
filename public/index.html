@@ -11,87 +11,107 @@
 <body>
     <script>
         document.addEventListener("DOMContentLoaded", () => {
-            const peerConnection = new RTCPeerConnection({
-                iceServers: [
-                    {
-                        urls: "stun:stun.l.google.com:19302"
-                    }
-                ]
-            });
+            let clientId;
+            const peerConnections = new Map(); // 他のクライアントごとにRTCPeerConnectionを保持
 
             const socket = new WebSocket("wss://localhost:8000");
 
-            socket.addEventListener("open", ev => {
+            socket.addEventListener("open", () => {
                 console.log("WebSocket 接続開始");
 
                 // 自分の音声ストリームを取得
                 navigator.mediaDevices.getUserMedia({ audio: true })
                     .then(stream => {
-                        // 自分の音声トラックをRTCPeerConnectionに追加
-                        stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
-
-                        // オファーを作成して送信
-                        createOffer();
+                        window.localStream = stream;
                     })
                     .catch(error => {
                         console.error("マイクへのアクセスが拒否されました:", error);
                     });
             });
 
-            // シグナリングデータを受信したときの処理
-            socket.onmessage = async event => {
+            // サーバーからのメッセージを受信
+            socket.addEventListener("message", async event => {
                 const message = JSON.parse(event.data);
+                const { type, id, targetId, sdp, candidate } = message;
 
-                console.log("メッセージタイプ:", message.type);
-
-                if (message.type === "offer") {
-                    // 相手からオファーを受信し、アンサーを作成して送信
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
-                    
+                if (type === "id") {
+                    // サーバーから自分のIDを受け取る
+                    clientId = id;
+                    console.log(`クライアントIDを受信: ${clientId}`);
+                } else if (type === "offer") {
+                    // 他のクライアントからのオファーを受信し、アンサーを送信
+                    const peerConnection = createPeerConnection(targetId);
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
                     const answer = await peerConnection.createAnswer();
-
                     await peerConnection.setLocalDescription(answer);
-                    socket.send(JSON.stringify({ type: "answer", sdp: peerConnection.localDescription }));
-                } else if (message.type === "answer") {
-                    // 相手からアンサーを受信
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
-                } else if (message.type === "candidate" && message.candidate) {
-                    // ICE候補を受信
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                }
-            };
-
-            // WebRTCのICE候補をシグナリングサーバーに送信
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
                     socket.send(JSON.stringify({
-                        type: "candidate",
-                        candidate: event.candidate
+                        type: "answer",
+                        targetId: targetId,
+                        sdp: peerConnection.localDescription,
                     }));
+                } else if (type === "answer") {
+                    // 他のクライアントからのアンサーを受信
+                    const peerConnection = peerConnections.get(targetId);
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+                } else if (type === "candidate") {
+                    // 他のクライアントからのICE候補を追加
+                    const peerConnection = peerConnections.get(targetId);
+                    if (peerConnection) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    }
                 }
-            };
+            });
 
-            // リモートの音声トラックを受信して再生
-            peerConnection.ontrack = event => {
-                const audioElement = document.createElement("audio");
+            // PeerConnectionの作成と管理
+            function createPeerConnection(targetId) {
+                const peerConnection = new RTCPeerConnection({
+                    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                });
 
-                audioElement.srcObject = event.streams[0];
-                audioElement.autoplay = true;
-                document.body.appendChild(audioElement);
-            };
+                // 自分の音声トラックを追加
+                window.localStream.getTracks().forEach(track => peerConnection.addTrack(track, window.localStream));
 
-            // WebRTC接続のためのオファーを作成して送信
-            async function createOffer() {
-                try {
-                    const offer = await peerConnection.createOffer();
+                peerConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        socket.send(JSON.stringify({
+                            type: "candidate",
+                            targetId: targetId,
+                            candidate: event.candidate
+                        }));
+                    }
+                };
 
-                    await peerConnection.setLocalDescription(offer);
-                    socket.send(JSON.stringify({
-                        type: "offer",
-                        sdp: peerConnection.localDescription
-                    }));
-                } catch { }
+                peerConnection.ontrack = event => {
+                    const audioElement = document.createElement("audio");
+                    audioElement.srcObject = event.streams[0];
+                    audioElement.autoplay = true;
+                    document.body.appendChild(audioElement);
+                };
+
+                peerConnections.set(targetId, peerConnection);
+                return peerConnection;
             }
+
+            // 新しい接続先をリクエスト（他のクライアントにオファーを送信）
+            async function connectToNewUser(newUserId) {
+                const peerConnection = createPeerConnection(newUserId);
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                socket.send(JSON.stringify({
+                    type: "offer",
+                    targetId: newUserId,
+                    sdp: peerConnection.localDescription
+                }));
+            }
+
+            // 他のクライアントが参加した際に呼ばれる（例として、"join"イベントの受信）
+            socket.addEventListener("join", event => {
+                const newUserId = event.data;
+                if (newUserId !== clientId) {
+                    connectToNewUser(newUserId);
+                }
+            });
         });
     </script>
 </body>
