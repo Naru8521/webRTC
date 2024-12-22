@@ -16,6 +16,7 @@
 
             const socket = new WebSocket("wss://localhost:8000");
 
+            // 音声ストリームが開始したことをサーバーに知らせる
             socket.addEventListener("open", () => {
                 console.log("WebSocket 接続開始");
 
@@ -34,6 +35,7 @@
                 const message = JSON.parse(event.data);
                 const { type, id, targetId, sdp, candidate } = message;
 
+                // IDを受け取った時
                 if (type === "id") {
                     // サーバーから自分のIDを受け取る
                     clientId = id;
@@ -71,6 +73,7 @@
                 // 自分の音声トラックを追加
                 window.localStream.getTracks().forEach(track => peerConnection.addTrack(track, window.localStream));
 
+                // peerconnectionのcandidateからイベントを取得
                 peerConnection.onicecandidate = event => {
                     if (event.candidate) {
                         socket.send(JSON.stringify({
@@ -81,6 +84,7 @@
                     }
                 };
 
+                // peerconnectionからtrackを取得
                 peerConnection.ontrack = event => {
                     const audioElement = document.createElement("audio");
                     audioElement.srcObject = event.streams[0];
@@ -88,6 +92,7 @@
                     document.body.appendChild(audioElement);
                 };
 
+                // peerconnectionsにユーザーを記録
                 peerConnections.set(targetId, peerConnection);
                 return peerConnection;
             }
